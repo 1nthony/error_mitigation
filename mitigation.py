@@ -91,6 +91,7 @@ def create_folders(sim_folder):
     os.makedirs(f'./results/{sim_folder}/histograms/', exist_ok=True)
     os.makedirs(f'./results/{sim_folder}/mitigation_results/', exist_ok=True)
     os.makedirs(f'./results/{sim_folder}/probs/', exist_ok=True)
+    os.makedirs(f'./results/{sim_folder}/circuits/', exist_ok=True)
 
 # %%
 def collect_probabilities(output_qc, path, noise_levels) :
@@ -182,7 +183,7 @@ def closest_integer(x, d):
     y = d * (x - 1) / 2     # real value for k to approach
     k_values = np.rint(y)
     n_values = y // d  # Integer division to find the quotient
-    s_values = y % d   # Modulo operation to find the remainder
+    s_values = np.round(y % d)   # Modulo operation to find the remainder
 
     return k_values.astype(int), n_values.astype(int), s_values.astype(int)
 
@@ -320,26 +321,26 @@ def L7t(qc) :
 
 
 # easy access to each layer
-L = [L0, L1, L2, L3, L4, L5, L6, L7]
-Lt = [L0t, L1t, L2t, L3t, L4t, L5t, L6t, L7t]
+L = [L1, L2, L3, L4, L5, L6, L7]
+Lt = [L1t, L2t, L3t, L4t, L5t, L6t, L7t]
 Lt.reverse()
 
 
 # original circuit
 def U(qc) :
-    for i in range(1, 8) :
+    for i in range(7) :
         L[i](qc)
     return qc
 
 # and its inverse
 def Ut(qc) :
-    for i in range(0, 7) :
+    for i in range(7) :
         Lt[i](qc)
     return qc
 
 
 # %%
-def build_full_circuit(layers) :
+def build_full_circuit_simple(layers) :
     """
     Constructs a quantum circuit consisting of multiple layers of operations.
 
@@ -364,7 +365,7 @@ def build_full_circuit(layers) :
     return qc
 
 
-def select_layers_from_left(d, s) :
+def select_layers_from_left_simple(d, s) :
     """
     Selects layers from left based on the provided parameters.
 
@@ -376,15 +377,17 @@ def select_layers_from_left(d, s) :
     - list: A list containing selected layers from the left based on the parameters.
         
     Example:
-    s = 3, d = 8 returns:
+    s = 3, d = 7 returns:
     [L7t L6t L5t L5 L6 L7]
     """  
     Ls = L[d-s:]
     Lst = Lt[:s]
-    return Lst + Ls
+    L_tot_s = Lst + Ls
+    L_tot_s.reverse()
+    return L_tot_s
 
 
-def loop(G, Gt, n) :
+def loop_simple(G, Gt, n) :
     """
     Constructs a list representing a loop of gates and their dagger counterparts.
 
@@ -408,7 +411,7 @@ def loop(G, Gt, n) :
     return L
 
 
-def circuit_folding(target_noise_levels) :
+def circuit_folding_simple(target_noise_levels, sim_folder, circuits_exist) :
     """
     Constructs a folded quantum circuit based on target noise levels.
 
@@ -421,21 +424,127 @@ def circuit_folding(target_noise_levels) :
              The folded circuit comprises multiple layers of quantum gates and their repetitions 
              based on the noise levels and predefined parameters.
     """
-    d = 8   # by construction of QFT
+    d = 7   # by construction of QFT
     ks, ns, ss = closest_integer(target_noise_levels, d)
     noise_levels = 1 + 2 * ks / d
     
     qc_list = []
     associated_layers_list = []
     # for i, n in enumerate(ns) :
-    for n, s in zip(ns, ss) :
-        layers = [U, *loop(U, Ut, n), *select_layers_from_left(d, s)]
-        qc = build_full_circuit(layers)
-        qc_list.append(qc)
-        associated_layers_list.append(layers)
+    print('Building circuits')
+    for n, s, lbda in tqdm(zip(ns, ss, noise_levels)):
+        if circuits_exist == True :
+            qc = pickle_load(filename=f'results/{sim_folder}/circuits/{lbda:.1f}.qc')
+            qc_list.append(qc)
+        else :
+            layers = [*select_layers_from_left_simple(d, s), *loop_simple(Ut, U, n), U]
+            qc = build_full_circuit_simple(layers)
+            qc_list.append(qc)
+            associated_layers_list.append(layers)
+            qc.draw('mpl', filename=f'results/{sim_folder}/circuits/{lbda:.1f}.pdf')
+            pickle_save(qc, filename=f'results/{sim_folder}/circuits/{lbda:.1f}.qc')
 
     return noise_levels, qc_list, associated_layers_list
     
+
+def layer_folding_simple(target_noise_levels, sim_folder, circuits_exist) :
+    """
+    Constructs a folded quantum circuit based on target noise levels.
+
+    Args:
+    - target_noise_levels (array of floats): The desired noise levels for the folded circuit.
+
+    Returns:
+    - Tuple: A tuple containing the calculated noise levels after folding and the folded quantum circuit.
+             The folding process involves constructing a folded circuit based on the target noise levels.
+             The folded circuit comprises multiple layers of quantum gates and their repetitions 
+             based on the noise levels and predefined parameters.
+    """
+    d = 7   # by construction of QFT
+    ks, ns, ss = closest_integer(target_noise_levels, d)
+    noise_levels = 1 + 2 * ks / d
+    
+    qc_list = []
+    associated_layers_list = []
+    # for i, n in enumerate(ns) :
+    print('Building circuits')
+    for n, s, lbda in tqdm(zip(ns, ss, noise_levels)):
+        layers = []
+        if circuits_exist == True :
+            qc = pickle_load(filename=f'results/{sim_folder}/circuits/{lbda:.1f}.qc')
+            qc_list.append(qc)
+        else :
+            # layers = [U, *loop_simple(U, Ut, n), *select_layers_from_left_simple(d, s)]
+            for j, Lj in enumerate(L):
+                if j < s :  # from left: in S
+                    l = [*loop_simple(Lt[d-1-j], Lj, n+1), Lj]
+                    layers += l
+                else :  # not in S
+                    l = [*loop_simple(Lt[d-1-j], Lj, n), Lj]
+                    layers += l
+            qc = build_full_circuit_simple(layers)
+            qc_list.append(qc)
+            associated_layers_list.append(layers)
+            # associated_layers_list.append(associated_layers_list)
+            qc.draw('mpl', filename=f'results/{sim_folder}/circuits/{lbda:.1f}.pdf')
+            pickle_save(qc, filename=f'results/{sim_folder}/circuits/{lbda:.1f}.qc')
+
+    return noise_levels, qc_list, associated_layers_list
+
+
+# %% [markdown]
+# ### Layer folding
+
+# %%
+if __name__ == '__main__' :
+    # original QFT 
+    target_noise_levels = np.array([1, 1.3])
+    sim_folder = 'test'
+    circuits_exist = False
+    create_folders(sim_folder)
+    noise_levels, qc_list, associated_layers_list = layer_folding_simple(target_noise_levels, sim_folder, circuits_exist)
+    
+    for qc in qc_list :
+        display(qc.draw(output='mpl'))
+
+# %%
+if __name__ == '__main__' :
+    Nshots = 1000
+    depolarizing_noise = 0.05
+
+    for qc in qc_list :
+    
+        results_true = run_true(qc, Nshots)
+        results_noisy = run_noisy(qc, Nshots, 'depolarizing', depolarizing_noise)
+        display(plot_histogram([results_true.get_counts(), results_noisy.get_counts()], legend=['true', 'noisy']))       # , color=['green', 'red'])
+
+
+
+# %%
+if __name__ == '__main__' :
+    noise_levels = np.array([2.5, 4.3])
+    circuits_exist = False
+    sim_folder = 'test_2'
+    create_folders(sim_folder)
+    lambdas, qc_list, layers_list = layer_folding_simple(noise_levels, sim_folder, circuits_exist)
+
+# %%
+if __name__ == '__main__' :
+    for qc in qc_list :
+        display(qc.draw(output='mpl'))
+
+# %%
+if __name__ == '__main__' :
+    Nshots = 1000
+    depolarizing_noise = 0.05
+
+    for qc in qc_list :
+    
+        results_true = run_true(qc, Nshots)
+        results_noisy = run_noisy(qc, Nshots, 'depolarizing', depolarizing_noise)
+        display(plot_histogram([results_true.get_counts(), results_noisy.get_counts()], legend=['true', 'noisy']))       # , color=['green', 'red'])
+
+
 
 # %% [markdown]
 # Original QFT : 
@@ -446,7 +555,7 @@ def circuit_folding(target_noise_levels) :
 if __name__ == '__main__' :
     # original QFT 
     gates_qft = [U]
-    qft = build_full_circuit(gates_qft)
+    qft = build_full_circuit_simple(gates_qft)
     display(qft.draw(output='mpl'))
 
 # %%
@@ -471,14 +580,14 @@ if __name__ == '__main__' :
 # %%
 if __name__ == '__main__' :
     LLt_all = []
-    for i in range(1, len(L)) :
+    for i in range(len(L)) :
         LLt_all.append(L[i])
-        LLt_all.append(Lt[7-i])
+        LLt_all.append(Lt[6-i])
     print(LLt_all)
 
 # %%
 if __name__ == '__main__' :
-    qft = build_full_circuit([U, Ut, *LLt_all])
+    qft = build_full_circuit_simple([U, Ut, *LLt_all])
     display(qft.draw(output='mpl'))
 
 # %%
@@ -497,7 +606,10 @@ if __name__ == '__main__' :
 # %%
 if __name__ == '__main__' :
     noise_levels = np.array([2.5, 4.3])
-    lambdas, qc_list, layers_list = circuit_folding(noise_levels)
+    circuits_exist = False
+    sim_folder = 'test_2'
+    create_folders(sim_folder)
+    lambdas, qc_list, layers_list = circuit_folding_simple(noise_levels, sim_folder, circuits_exist)
 
 # %%
 if __name__ == '__main__' :
@@ -1348,13 +1460,15 @@ if __name__ == '__main__' :
     noise_type = 'fake_perth'  # 'fake_perth', 'depolarizing'
     noise_levels = np.linspace(1, 200, 15)
     nreps = 2
-    sim_folder = 'ZNE_exp'
+    sim_folder = 'test'
     # accepted zne_type: 'exp', 'rich_d3', 'lin', 'quad'
     zne_type = 'exp'
 
     params_noise = [depolarizing_noise]
+    circuits_exist = False
 
-    doit(   sim_folder, zne_type, nreps, circuit_folding, possible_outputs, 
+    folding = lambda x: circuit_folding_simple(x, sim_folder, circuits_exist)
+    doit(   sim_folder, zne_type, nreps, folding, possible_outputs, 
             Nshots, noise_type, noise_levels, *params_noise)
 
 # %% [markdown]
@@ -1368,15 +1482,17 @@ if __name__ == '__main__' :
     noise_type = 'depolarizing'  # or 'fake_perth'
     noise_levels = np.linspace(1, 200, 15)
     nreps = 2
-    sim_folder = 'ZNE_exp'
+    sim_folder = 'test'
     # accepted zne_type: 'exp', 'rich_d3', 'lin', 'quad'
     zne_type = 'lin'
+
+    folding = lambda x: circuit_folding_simple(x, sim_folder, circuits_exist)
 
     params_noise = [depolarizing_noise]
 
 # %%
 if __name__ == '__main__' :
-    last_vals, last_legend, Eu, Em = main_create_data(sim_folder, zne_type, nreps, circuit_folding, possible_outputs, 
+    last_vals, last_legend, Eu, Em = main_create_data(sim_folder, zne_type, nreps, folding, possible_outputs, 
                     Nshots, noise_type, noise_levels, *params_noise
                     )
 
@@ -1420,12 +1536,15 @@ if __name__ == '__main__' :
     sim_folder = 'ZNE_exp'
     zne_type = 'rich_d3'
 
+
+    folding = lambda x: circuit_folding_simple(x, sim_folder, circuits_exist)
+
     params_noise = [depolarizing_noise]
 
 # %%
 if __name__ == '__main__' :
     # generate data
-    create_run_circuits(sim_folder, zne_type, nreps, circuit_folding, possible_outputs, 
+    create_run_circuits(sim_folder, zne_type, nreps, folding, possible_outputs, 
                         Nshots, noise_type, noise_levels, *params_noise
                         )
 
@@ -1833,7 +1952,7 @@ if __name__ == '__main__' :
 
     # accepted zne_type: 'exp', 'rich_d3', 'lin', 'quad'
     zne_type = 'exp'
-    sim_folder = 'ZNE_exp'
+    sim_folder = 'ZNE_exp_layer'
 
     run_existing_circuits = False    
 
